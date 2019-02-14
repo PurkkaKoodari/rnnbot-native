@@ -1,0 +1,3 @@
+double randdouble();
+
+double randnormal();

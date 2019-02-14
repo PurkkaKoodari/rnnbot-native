@@ -1,0 +1,13 @@
+# python junk
+__pycache__/
+*.py[cod]
+
+# binary
+rnn
+
+# vs code junk
+.vscode/
+
+# data files
+config.py
+rnnbot-state.dat
