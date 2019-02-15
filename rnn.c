@@ -1,3 +1,11 @@
+/*
+ * Minimal character-level Vanilla RNN model
+ * 
+ * Based on Python code written by Andrej Karpathy (@karpathy)
+ * https://gist.github.com/karpathy/d4dee566867f8291f086
+ * BSD License
+ */
+
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
