@@ -6,8 +6,9 @@
 #include <float.h>
 #include <stdbool.h>
 #include <time.h>
-#include <sys/stat.h>
 #include <sys/select.h>
+#include <sys/signal.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 
 #include "rnn.h"
@@ -30,6 +31,8 @@ static void *check_alloc(size_t n) {
     if (ptr == NULL) exit(1);
     return ptr;
 }
+
+static void ignore_signal(int dummy) {}
 
 #define alloc_typed(type, n) ((type *) check_alloc((n) * sizeof(type)))
 #define alloc_double(n) alloc_typed(double, n)
@@ -528,6 +531,7 @@ static void sample(size_t length, wwchar_t *to, symbol_t seed) {
 
 int main(int argc, const char **argv) {
     srand(time(NULL));
+    signal(SIGINT, ignore_signal);
 
     if (argc > 1 && strcmp(argv[1], "--resume") == 0) {
         init_from_stdin();
@@ -537,6 +541,7 @@ int main(int argc, const char **argv) {
 
     fprintf(stderr, "input size %lu\n", input_len);
     fprintf(stderr, "vocabulary size %lu\n", vocab_size);
+    fprintf(stderr, "iteration %lu\n", n);
 
     fd_set fdset;
     struct timeval timeout;

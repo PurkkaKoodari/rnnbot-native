@@ -1,130 +1,240 @@
-import subprocess
-import threading
+import asyncio
+import aiofiles
 import collections
-import struct
+import enum
+import logging
 import os
-from signal import SIGINT
+import random
+import signal
+import struct
+import time
+
 from typing import Optional
 
-from telegram import telegram
-
+import asynctg
 import config
 
-assert config.TOKEN
+LOGGER = logging.getLogger("RNNBot")
 
-bot = telegram.Bot(config.TOKEN)
-bot.confirmToken()
+ActionType = enum.Enum("ActionType", "SAMPLE GET_ITER COMMIT")
 
-class Action:
-    SAMPLE = object()
-    GET_ITER = object()
-    QUIT = object()
-    COMMIT = object()
-    def __init__(self, type):
-        self.type = type
-        self._done = False
-        self._result = None
-        self._cond = threading.Condition()
-    def complete(self, result=None):
-        with self._cond:
-            self._result = result
-            self._done = True
-            self._cond.notify_all()
-    def wait(self):
-        if not self._done:
-            with self._cond:
-                self._cond.wait_for(lambda: self._done)
-        return self._result
+def utc_timestamp():
+    return int(time.mktime(time.gmtime()))
 
-class RNNThread(threading.Thread):
+def format_time(seconds):
+    if seconds is None:
+        return "N/A"
+    return "{:d}:{:02d}:{:02d}".format(seconds // 3600, seconds // 60 % 60, seconds % 60)
+
+class RNNBot:
     def __init__(self):
-        super().__init__()
-        self._new_messages = collections.deque(maxlen=config.COMMIT_MESSAGES)
-        self._new_messages.append("ebin juttu hermanni " * 100) # TODO remove
-        self._action_queue = collections.deque([Action(Action.COMMIT)])
-        self._msg_lock = threading.Lock()
-        self._queue_cond = threading.Condition()
-        self._action_cond = threading.Condition()
-    def run(self):
-        process = None # type: Optional[subprocess.Popen]
-        while True:
-            with self._queue_cond:
-                self._queue_cond.wait_for(lambda: self._action_queue)
-                action = self._action_queue.popleft() # type: Action
+        self.queue = asyncio.Queue()
+        self.messages = collections.deque(maxlen=config.COMMIT_MESSAGES)
+        self.last_commit_attempt = 0
+        self.last_real_commit = 0
+    
+    def next_commit(self, after):
+        return after + config.COMMIT_INTERVAL - (after - config.COMMIT_EPOCH) % config.COMMIT_INTERVAL
 
-            if action.type is Action.COMMIT:
-                if process is not None: # TODO replace with ./rnn resume
-                    process.send_signal(SIGINT)
-                    process.wait()
-                process = subprocess.Popen(["./rnn"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-                with self._msg_lock:
-                    data = "\n".join(self._new_messages)
-                    self._new_messages.clear()
-                process.stdin.write(data.encode() + b"\0")
-                process.stdin.flush()
-                action.complete()
+    async def run_rnn(self):
+        datafile = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rnn-state.dat")
+        process = None
 
-            elif action.type is Action.SAMPLE:
-                process.stdin.write(b"s")
-                process.stdin.flush()
-                response = b""
-                while True:
-                    ch = process.stdout.read(1)
-                    if not ch or ch == b"\0":
-                        break
-                    response += ch
-                action.complete(response)
+        if os.path.exists(datafile):
+            LOGGER.info("Loading saved data")
+            async with aiofiles.open(datafile, "rb") as stream:
+                save_data = await stream.read()
+            
+            self.last_commit_attempt, self.last_real_commit, num_messages = struct.unpack_from("=QQI", save_data, 0)
 
-            elif action.type is Action.GET_ITER:
-                process.stdin.write(b"i")
-                process.stdin.flush()
-                response = b""
-                while len(response) < 16:
-                    buf = process.stdout.read(16 - len(response))
-                    if not buf:
-                        break
-                    response += buf
-                action.complete(struct.unpack("Ld", response))
+            LOGGER.info("Loading {} messages".format(num_messages))
+            offset = 20
+            for _ in range(num_messages):
+                separator = save_data.index(b"\0", offset)
+                self.messages.append(save_data[offset:separator].decode("utf-8"))
+                offset = separator + 1
 
-            elif action.type is Action.QUIT:
+            if offset != len(save_data):
+                LOGGER.info("Loading RNN state")
+                process = await asyncio.create_subprocess_exec("./rnn", "--resume", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
+                process.stdin.write(save_data[offset:])
+                await process.stdin.drain()
+            
+            LOGGER.info("Saved data loaded")
+
+        try:
+            while True:
+                action, future = await self.queue.get()
+
+                try:
+                    if action == ActionType.COMMIT:
+                        assert self.messages, "can't commit if no messages are available"
+                        LOGGER.info("Committing {} messages".format(len(self.messages)))
+                        data = "\n".join(self.messages).encode() + b"\0"
+                        self.messages.clear()
+                        # kill old rnn process
+                        if process is not None:
+                            process.terminate()
+                            await process.wait()
+                        # create new process and initialize it with message data
+                        process = await asyncio.create_subprocess_exec("./rnn", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
+                        process.stdin.write(data)
+                        await process.stdin.drain()
+                        future.set_result(None)
+                        self.last_real_commit = self.last_commit_attempt = utc_timestamp()
+
+                    elif action == ActionType.SAMPLE:
+                        if process is None:
+                            future.set_result(None)
+                            continue
+                        process.stdin.write(b"s")
+
+                        result = (await process.stdout.readuntil(b"\0"))[:-1]
+                        future.set_result(result.decode("utf-8"))
+                    
+                    elif action == ActionType.GET_ITER:
+                        if process is None:
+                            future.set_result(None)
+                            continue
+                        process.stdin.write(b"i")
+                        result = await process.stdout.readexactly(16)
+                        future.set_result(struct.unpack("=Qd", result))
+                    
+                    else:
+                        future.set_exception(ValueError("bad action type"))
+
+                except asyncio.CancelledError:
+                    raise
+                except Exception as ex:
+                    future.set_exception(ex)
+            
+        except asyncio.CancelledError:
+            LOGGER.info("Saving {} messages".format(len(self.messages)))
+            save_data = struct.pack("=QQI", self.last_commit_attempt, self.last_real_commit, len(self.messages))
+            for message in self.messages:
+                save_data += message.encode("utf-8") + b"\0"
+            if process is not None:
+                LOGGER.info("Saving RNN state")
                 process.stdin.write(b"q")
-                process.stdin.flush()
-                process.stdin.close()
-                dump = process.stdout.read()
-                process.wait()
-                with open("rnnbot-state.dat", "wb") as stream:
-                    stream.write(dump)
-                action.complete()
-                return
-            
+                process.stdin.write_eof()
+                save_data += await process.stdout.read()
+                await process.wait()
+            async with aiofiles.open(datafile, "wb") as stream:
+                await stream.write(save_data)
+            LOGGER.info("Saved data")
+        
+    async def do_action(self, action):
+        future = asyncio.get_event_loop().create_future()
+        self.queue.put_nowait((action, future))
+        return await future
+
+    async def run_commits(self):
+        startup = utc_timestamp()
+        while True:
+            if self.last_commit_attempt is None:
+                # not committed yet, commit at first commit point
+                next_commit = self.next_commit(startup)
             else:
-                print("unknown action")
-                action.complete()
+                # committed previously, commit if interval elapsed
+                next_commit = self.next_commit(self.last_commit_attempt)
+            now = utc_timestamp()
+            if next_commit > now:
+                await asyncio.sleep(max(1, min(60, 0.9 * (next_commit - now))))
+                continue
+            if not self.messages:
+                LOGGER.info("Skipping commit because no new messages have been received")
+                self.last_commit_attempt = now
+                continue
+            await self.do_action(ActionType.COMMIT)
 
-    def put_message(self, message):
-        with self._msg_lock:
-            self._new_messages.append(message)
-            
-    def action(self, type):
-        action = Action(type)
-        with self._queue_cond:
-            self._action_queue.append(action)
-            self._queue_cond.notify_all()
-        return action.wait()
+    async def run_bot(self, bot):
+        while True:
+            try:
+                async for update in bot:
+                    try:
+                        if "message" not in update:
+                            continue
+                        message = update["message"]
+                        if message["chat"]["id"] not in config.GROUPS or "text" not in message:
+                            continue
+                        text = message["text"]
+                        assert text
 
-rnn = RNNThread()
-rnn.start()
+                        if text[0] == "/":
+                            command = text.split(None, 1)[0]
+                            if command.endswith("@" + bot.username):
+                                command = command[:-len("@" + bot.username)]
 
-while 1:
-    try:
-        cmd = input(">")
-        if cmd[0] == "/":
-            action = getattr(Action, cmd[1:].upper())
-            result = rnn.action(action)
-            print(result)
-            if action is Action.QUIT:
-                break
-        else:
-            rnn.put_message(cmd)
-    except Exception as ex:
-        print(ex)
+                            if command == "/rnn":
+                                response = await self.do_action(ActionType.SAMPLE)
+                                await bot.request("sendMessage", {
+                                    "chat_id": message["chat"]["id"],
+                                    "text": config.NO_DATA if response is None else response,
+                                })
+                            elif command == "/rnniter":
+                                iteration = await self.do_action(ActionType.GET_ITER)
+                                now = utc_timestamp()
+                                if iteration is None:
+                                    response = config.ITER_NO_DATA.format(
+                                        to_next=format_time(self.next_commit(now) - now),
+                                    )
+                                else:
+                                    response = config.ITER_MESSAGE.format(
+                                        iteration=iteration[0],
+                                        loss=iteration[1],
+                                        from_last=format_time(now - self.last_real_commit if self.last_real_commit else None),
+                                        to_next=format_time(self.next_commit(now) - now),
+                                    )
+                                await bot.request("sendMessage", {
+                                    "chat_id": message["chat"]["id"],
+                                    "text": response,
+                                    "parse_mode": "html",
+                                })
+                            elif command == "/rnncommit":
+                                await do_action(queue, ActionType.COMMIT)
+                        
+                        else:
+                            if len(text) < config.MESSAGE_MIN_LENGTH:
+                                continue
+                            if len(text.split()) < config.MESSAGE_MIN_WORDS:
+                                continue
+                            if random.random() < config.NAME_CHANCE and "from" in message:
+                                name = message["from"]["first_name"]
+                                if "last_name" in message["from"]:
+                                    name += " " + message["from"]["last_name"]
+                                text = name + ": " + text
+                            self.messages.append(text)
+
+                    except asyncio.CancelledError:
+                        raise
+                    except:
+                        LOGGER.error("Error handling update", exc_info=True)
+            except asynctg.ApiError:
+                LOGGER.error("Error fetching updates", exc_info=True)
+    
+    async def run(self):
+        async with asynctg.Bot(config.TOKEN) as bot:
+            bot_task = asyncio.ensure_future(self.run_bot(bot))
+            rnn_task = asyncio.ensure_future(self.run_rnn())
+            asyncio.ensure_future(self.run_commits())
+
+            def quit():
+                LOGGER.info("Quitting")
+                rnn_task.cancel()
+                bot_task.cancel()
+            asyncio.get_event_loop().add_signal_handler(signal.SIGINT, quit)
+
+            done, _ = await asyncio.wait([bot_task, rnn_task], return_when=asyncio.FIRST_EXCEPTION)
+            quit()
+            # raise errors from tasks before quitting
+            for task in done:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            await asyncio.wait([bot_task, rnn_task])
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG, format=config.LOG_FORMAT)
+
+    asyncio.get_event_loop().run_until_complete(RNNBot().run())

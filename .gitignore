@@ -10,4 +10,4 @@ rnn
 
 # data files
 config.py
-rnnbot-state.dat
+rnn-state.dat
