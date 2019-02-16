@@ -27,7 +27,7 @@ ITER_SANITY = b"RNNIterI"
 ActionType = enum.Enum("ActionType", "SAMPLE GET_ITER COMMIT")
 
 def utc_timestamp():
-    return int(time.mktime(time.gmtime()))
+    return int(time.time())
 
 def format_time(seconds):
     if seconds is None:
