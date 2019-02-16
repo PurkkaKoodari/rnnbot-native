@@ -55,17 +55,20 @@ class RNNBot:
                 save_data = await stream.read()
 
             if not save_data.startswith(NEW_SAVE_MAGIC):
+                LOGGER.info("Data file version: pre-versioning")
                 self.last_commit_attempt, self.last_real_commit, num_messages = struct.unpack_from("=QQI", save_data, 0)
                 self.messages_in_commit = 0
+                offset = 20
             else:
                 save_version, = struct.unpack_from("=Q", save_data, 8)
+                LOGGER.info("Data file version: {}".format(save_version))
                 if save_version == 1:
                     self.last_commit_attempt, self.last_real_commit, self.messages_in_commit, num_messages = struct.unpack_from("=QQQI", save_data, 16)
+                    offset = 44
                 else:
                     raise ValueError("unknown save file version")
 
             LOGGER.info("Loading {} messages".format(num_messages))
-            offset = 20
             for _ in range(num_messages):
                 separator = save_data.index(b"\0", offset)
                 self.messages.append(save_data[offset:separator].decode("utf-8"))
