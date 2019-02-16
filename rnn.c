@@ -27,7 +27,9 @@
 #define MAX_SYMBOLS 65536
 #define MAX_CHARS 256
 
-#define DUMP_SANITY 0x65746174534e4e52 // RNNState
+static const uint64_t dump_sanity = 0x65746174534e4e52; // RNNState
+static const uint64_t sample_sanity = 0x6c706d61534e4e52; // RNNSampl
+static const uint64_t iter_sanity = 0x49726574494e4e52; // RNNIterI
 
 __attribute((noreturn)) void fail(const char *reason) {
     fprintf(stderr, "%s\n", reason);
@@ -53,17 +55,17 @@ static void check_read(void *ptr, size_t size, size_t n) {
     if (fread(ptr, size, n, stdin) != n) fail("failed to read data");
 }
 
-#define read_typed(type, ptr, n) check_read(ptr, sizeof(type), n)
+#define read_typed(type, ptr, n) check_read((void *) ptr, sizeof(type), n)
 #define read_double(ptr, n) read_typed(double, ptr, n)
 #define read_size_t(ptr, n) read_typed(size_t, ptr, n)
 #define read_symbol(ptr, n) read_typed(symbol_t, ptr, n)
 #define read_wwchar(ptr, n) read_typed(wwchar_t, ptr, n)
 
-static void check_write(void *ptr, size_t size, size_t n) {
+static void check_write(const void *ptr, size_t size, size_t n) {
     if (fwrite(ptr, size, n, stdout) != n) fail("failed to write data");
 }
 
-#define write_typed(type, ptr, n) check_write(ptr, sizeof(type), n)
+#define write_typed(type, ptr, n) check_write((void *) ptr, sizeof(type), n)
 #define write_double(ptr, n) write_typed(double, ptr, n)
 #define write_size_t(ptr, n) write_typed(size_t, ptr, n)
 #define write_symbol(ptr, n) write_typed(symbol_t, ptr, n)
@@ -288,6 +290,8 @@ static void init_from_text() {
     wwchar_t *input_codepoints = alloc_wwchar(input_len);
     if (!utf8toww(input_codepoints, input_buf)) fail("invalid utf-8 input");
 
+    fprintf(stderr, "input size %lu\n", input_len);
+
     input_data = alloc_symbol(input_len);
     
     map_new(&vocabulary);
@@ -309,6 +313,8 @@ static void init_from_text() {
     map_free(&input_char_map, sizeof(wwchar_t));
 
     vocab_size = next_symbol;
+
+    fprintf(stderr, "vocabulary size %lu\n", vocab_size);
 
     alloc_model();
 
@@ -335,6 +341,9 @@ static void init_from_text() {
 static void init_from_stdin() {
     read_size_t(&vocab_size, 1);
     read_size_t(&input_len, 1);
+
+    fprintf(stderr, "input size %lu\n", input_len);
+    fprintf(stderr, "vocabulary size %lu\n", vocab_size);
     
     map_new(&vocabulary);
 
@@ -368,10 +377,13 @@ static void init_from_stdin() {
 
     read_double(&smooth_loss, 1);
 
+    fprintf(stderr, "iteration %lu\n", n);
+    fprintf(stderr, "loss %f\n", smooth_loss);
+
     // sanity check
     uint64_t sanity;
     read_typed(uint64_t, &sanity, 1);
-    if (sanity != DUMP_SANITY) fail("dump length mismatch");
+    if (sanity != dump_sanity) fail("dump length mismatch");
 }
 
 static void dump_to_stdout() {
@@ -405,8 +417,7 @@ static void dump_to_stdout() {
 
     write_double(&smooth_loss, 1);
 
-    uint64_t sanity = DUMP_SANITY;
-    write_typed(uint64_t, &sanity, 1);
+    write_typed(uint64_t, &dump_sanity, 1);
 }
 
 static void iteration() {
@@ -547,10 +558,6 @@ int main(int argc, const char **argv) {
         init_from_text();
     }
 
-    fprintf(stderr, "input size %lu\n", input_len);
-    fprintf(stderr, "vocabulary size %lu\n", vocab_size);
-    fprintf(stderr, "iteration %lu\n", n);
-
     fd_set fdset;
     struct timeval timeout;
     timeout.tv_sec = 1;
@@ -580,6 +587,7 @@ int main(int argc, const char **argv) {
                 if (!wwtoutf8(sample_utf8, sample_ww)) fail("failed to convert to utf-8");
                 
                 fwrite(sample_utf8, 1, sample_len_utf8 + 1, stdout);
+                write_typed(uint64_t, &sample_sanity, 1);
                 fflush(stdout);
                 
                 free(sample_ww);
@@ -588,6 +596,7 @@ int main(int argc, const char **argv) {
             case 'i':
                 fwrite(&n, sizeof(size_t), 1, stdout);
                 fwrite(&smooth_loss, sizeof(double), 1, stdout);
+                write_typed(uint64_t, &iter_sanity, 1);
                 fflush(stdout);
                 break;
             case EOF:

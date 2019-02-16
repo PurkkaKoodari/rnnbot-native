@@ -7,6 +7,7 @@ import os
 import random
 import signal
 import struct
+import sys
 import time
 
 from typing import Optional
@@ -15,6 +16,10 @@ import asynctg
 import config
 
 LOGGER = logging.getLogger("RNNBot")
+
+DUMP_SANITY = b"RNNState"
+SAMPLE_SANITY = b"RNNSampl"
+ITER_SANITY = b"RNNIterI"
 
 ActionType = enum.Enum("ActionType", "SAMPLE GET_ITER COMMIT")
 
@@ -61,6 +66,8 @@ class RNNBot:
                 await process.stdin.drain()
             
             LOGGER.info("Saved data loaded")
+        
+        commit_task = asyncio.ensure_future(self.run_commits())
 
         try:
             while True:
@@ -68,7 +75,11 @@ class RNNBot:
 
                 try:
                     if action == ActionType.COMMIT:
-                        assert self.messages, "can't commit if no messages are available"
+                        now = utc_timestamp()
+                        self.last_commit_attempt = now
+                        if sum(map(len, self.messages)) < config.COMMIT_MIN_LENGTH:
+                            LOGGER.info("Skipping commit because too little data has been received")
+                            continue
                         LOGGER.info("Committing {} messages".format(len(self.messages)))
                         data = "\n".join(self.messages).encode() + b"\0"
                         self.messages.clear()
@@ -81,7 +92,7 @@ class RNNBot:
                         process.stdin.write(data)
                         await process.stdin.drain()
                         future.set_result(None)
-                        self.last_real_commit = self.last_commit_attempt = utc_timestamp()
+                        self.last_real_commit = now
 
                     elif action == ActionType.SAMPLE:
                         if process is None:
@@ -90,6 +101,8 @@ class RNNBot:
                         process.stdin.write(b"s")
 
                         result = (await process.stdout.readuntil(b"\0"))[:-1]
+                        sanity = await process.stdout.readexactly(8)
+                        assert sanity == SAMPLE_SANITY, "data ended with {} instead of {}".format(sanity, SAMPLE_SANITY)
                         future.set_result(result.decode("utf-8"))
                     
                     elif action == ActionType.GET_ITER:
@@ -98,6 +111,8 @@ class RNNBot:
                             continue
                         process.stdin.write(b"i")
                         result = await process.stdout.readexactly(16)
+                        sanity = await process.stdout.readexactly(8)
+                        assert sanity == ITER_SANITY, "data ended with {} instead of {}".format(sanity, ITER_SANITY)
                         future.set_result(struct.unpack("=Qd", result))
                     
                     else:
@@ -118,10 +133,12 @@ class RNNBot:
                 process.stdin.write(b"q")
                 process.stdin.write_eof()
                 save_data += await process.stdout.read()
+                assert save_data.endswith(DUMP_SANITY), "data ended with {} instead of {}".format(save_data[-8:], DUMP_SANITY)
                 await process.wait()
             async with aiofiles.open(datafile, "wb") as stream:
                 await stream.write(save_data)
             LOGGER.info("Saved data")
+            commit_task.cancel()
         
     async def do_action(self, action):
         future = asyncio.get_event_loop().create_future()
@@ -141,10 +158,6 @@ class RNNBot:
             if next_commit > now:
                 await asyncio.sleep(max(1, min(60, 0.9 * (next_commit - now))))
                 continue
-            if not self.messages:
-                LOGGER.info("Skipping commit because no new messages have been received")
-                self.last_commit_attempt = now
-                continue
             await self.do_action(ActionType.COMMIT)
 
     async def run_bot(self, bot):
@@ -158,7 +171,7 @@ class RNNBot:
                         if message["chat"]["id"] not in config.GROUPS or "text" not in message:
                             continue
                         text = message["text"]
-                        assert text
+                        assert text and "\0" not in text
 
                         if text[0] == "/":
                             command = text.split(None, 1)[0]
@@ -190,8 +203,8 @@ class RNNBot:
                                     "text": response,
                                     "parse_mode": "html",
                                 })
-                            elif command == "/rnncommit":
-                                await do_action(queue, ActionType.COMMIT)
+                            elif command == "/rnncommit" and "from" in message and message["from"]["id"] in config.ADMINS:
+                                await self.do_action(ActionType.COMMIT)
                         
                         else:
                             if len(text) < config.MESSAGE_MIN_LENGTH:
@@ -216,7 +229,6 @@ class RNNBot:
         async with asynctg.Bot(config.TOKEN) as bot:
             bot_task = asyncio.ensure_future(self.run_bot(bot))
             rnn_task = asyncio.ensure_future(self.run_rnn())
-            asyncio.ensure_future(self.run_commits())
 
             def quit():
                 LOGGER.info("Quitting")
@@ -235,6 +247,13 @@ class RNNBot:
             await asyncio.wait([bot_task, rnn_task])
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG, format=config.LOG_FORMAT)
+    formatter = logging.Formatter(config.LOG_FORMAT)
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(formatter)
+    logging.getLogger().addHandler(handler)
+    handler = logging.FileHandler("rnn.log")
+    handler.setFormatter(formatter)
+    logging.getLogger().addHandler(handler)
+    logging.getLogger().setLevel(logging.DEBUG)
 
     asyncio.get_event_loop().run_until_complete(RNNBot().run())

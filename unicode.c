@@ -27,7 +27,7 @@ size_t wwstrlen(const wwchar_t *str) {
 size_t wwutf8len(const wwchar_t *str) {
     size_t i = 0;
     wwchar_t ch;
-    while ((ch = *str++)) i += 1 + !!(ch & ~0x7f) + !!(ch & ~0x7ff) + ~~(ch & ~0xffff);
+    while ((ch = *str++)) i += 1 + !!(ch & ~0x7f) + !!(ch & ~0x7ff) + !!(ch & ~0xffff);
     return i;
 }
 
