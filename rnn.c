@@ -31,8 +31,8 @@ static const uint64_t dump_sanity = 0x65746174534e4e52; // RNNState
 static const uint64_t sample_sanity = 0x6c706d61534e4e52; // RNNSampl
 static const uint64_t iter_sanity = 0x49726574494e4e52; // RNNIterI
 
-__attribute((noreturn)) void fail(const char *reason) {
-    fprintf(stderr, "%s\n", reason);
+__attribute((noreturn)) void _fail(const char *reason, const char *file, uint32_t line) {
+    fprintf(stderr, "%s (%s:%u)\n", reason, file, line);
     exit(1);
 }
 
@@ -150,11 +150,12 @@ static inline void clip_double(double *ptr, size_t n, double limit) {
     for (size_t i = 0; i < n; i++) ptr[i] = ptr[i] > limit ? limit : ptr[i] < -limit ? -limit : ptr[i];
 }
 
-static const size_t hidden_size = 100;
 static const size_t seq_length = 25;
 static const double learning_rate = 1e-1;
 
 static const size_t sample_length = 200;
+
+static size_t hidden_size;
 
 static double *Wxh;
 static double *Whh;
@@ -269,6 +270,8 @@ static void free_model() {
 }
 
 static void init_from_text() {
+    read_size_t(&hidden_size, 1);
+
     int read_char;
     size_t raw_input_len = 0;
     size_t buf_len = 16;
@@ -289,8 +292,6 @@ static void init_from_text() {
     input_len = utf8strlen(input_buf);
     wwchar_t *input_codepoints = alloc_wwchar(input_len);
     if (!utf8toww(input_codepoints, input_buf)) fail("invalid utf-8 input");
-
-    fprintf(stderr, "input size %lu\n", input_len);
 
     input_data = alloc_symbol(input_len);
     
@@ -314,7 +315,9 @@ static void init_from_text() {
 
     vocab_size = next_symbol;
 
+    fprintf(stderr, "input size %lu\n", input_len);
     fprintf(stderr, "vocabulary size %lu\n", vocab_size);
+    fprintf(stderr, "hidden layer size %lu\n", hidden_size);
 
     alloc_model();
 
@@ -339,11 +342,26 @@ static void init_from_text() {
 }
 
 static void init_from_stdin() {
+    size_t version;
     read_size_t(&vocab_size, 1);
-    read_size_t(&input_len, 1);
+
+    if (vocab_size != 0) {
+        // version 0
+        read_size_t(&input_len, 1);
+        hidden_size = 300;
+    } else {
+        // versioned file
+        read_size_t(&version, 1);
+        if (version == 1) {
+            read_size_t(&hidden_size, 1);
+            read_size_t(&vocab_size, 1);
+            read_size_t(&input_len, 1);
+        } else fail("unknown data version");
+    }
 
     fprintf(stderr, "input size %lu\n", input_len);
     fprintf(stderr, "vocabulary size %lu\n", vocab_size);
+    fprintf(stderr, "hidden layer size %lu\n", hidden_size);
     
     map_new(&vocabulary);
 
@@ -387,6 +405,12 @@ static void init_from_stdin() {
 }
 
 static void dump_to_stdout() {
+    static const size_t new_version_magic = 0;
+    static const size_t version = 1;
+    write_size_t(&new_version_magic, 1);
+    write_size_t(&version, 1);
+
+    write_size_t(&hidden_size, 1);
     write_size_t(&vocab_size, 1);
     write_size_t(&input_len, 1);
     

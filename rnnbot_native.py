@@ -5,6 +5,7 @@ import enum
 import logging
 import os
 import random
+import shutil
 import signal
 import struct
 import sys
@@ -16,6 +17,8 @@ import asynctg
 import config
 
 LOGGER = logging.getLogger("RNNBot")
+
+NEW_SAVE_MAGIC = b"RNNSaved"
 
 DUMP_SANITY = b"RNNState"
 SAMPLE_SANITY = b"RNNSampl"
@@ -42,15 +45,24 @@ class RNNBot:
         return after + config.COMMIT_INTERVAL - (after - config.COMMIT_EPOCH) % config.COMMIT_INTERVAL
 
     async def run_rnn(self):
-        datafile = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rnn-state.dat")
+        datadir = os.path.dirname(os.path.abspath(__file__))
+        datafile = os.path.join(datadir, "rnn-state.dat")
         process = None
 
         if os.path.exists(datafile):
             LOGGER.info("Loading saved data")
             async with aiofiles.open(datafile, "rb") as stream:
                 save_data = await stream.read()
-            
-            self.last_commit_attempt, self.last_real_commit, num_messages = struct.unpack_from("=QQI", save_data, 0)
+
+            if not save_data.startswith(NEW_SAVE_MAGIC):
+                self.last_commit_attempt, self.last_real_commit, num_messages = struct.unpack_from("=QQI", save_data, 0)
+                self.messages_in_commit = 0
+            else:
+                save_version, = struct.unpack_from("=Q", save_data, 8)
+                if save_version == 1:
+                    self.last_commit_attempt, self.last_real_commit, self.messages_in_commit, num_messages = struct.unpack_from("=QQQI", save_data, 16)
+                else:
+                    raise ValueError("unknown save file version")
 
             LOGGER.info("Loading {} messages".format(num_messages))
             offset = 20
@@ -80,19 +92,36 @@ class RNNBot:
                         if sum(map(len, self.messages)) < config.COMMIT_MIN_LENGTH:
                             LOGGER.info("Skipping commit because too little data has been received")
                             continue
-                        LOGGER.info("Committing {} messages".format(len(self.messages)))
-                        data = "\n".join(self.messages).encode() + b"\0"
+                        messages_committed = len(self.messages)
+                        LOGGER.info("Committing {} messages".format(messages_committed))
+                        data = struct.pack("=Q", config.HIDDEN_SIZE) + "\n".join(self.messages).encode() + b"\0"
                         self.messages.clear()
                         # kill old rnn process
                         if process is not None:
-                            process.terminate()
-                            await process.wait()
+                            try:
+                                LOGGER.info("Saving final state of commit")
+                                process.stdin.write(b"q")
+                                process.stdin.write_eof()
+                                save_data = await process.stdout.read()
+                                if not save_data.endswith(DUMP_SANITY):
+                                    LOGGER.warn("data ended with {} instead of {}".format(save_data[-8:], DUMP_SANITY))
+                                await process.wait()
+                                statefile = os.path.join(datadir, "endstates/{}.dat".format(utc_timestamp()))
+                                async with aiofiles.open(statefile, "wb") as stream:
+                                    await stream.write(save_data)
+                            except asyncio.CancelledError:
+                                raise
+                            except:
+                                LOGGER.error("Failed to save final state", exc_info=True)
+                                process.terminate()
+                                await process.wait()
                         # create new process and initialize it with message data
                         process = await asyncio.create_subprocess_exec("./rnn", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
                         process.stdin.write(data)
                         await process.stdin.drain()
                         future.set_result(None)
                         self.last_real_commit = now
+                        self.messages_in_commit = messages_committed
 
                     elif action == ActionType.SAMPLE:
                         if process is None:
@@ -124,8 +153,16 @@ class RNNBot:
                     future.set_exception(ex)
             
         except asyncio.CancelledError:
+            if os.path.exists(datafile):
+                LOGGER.info("Backing up old data file")
+                try:
+                    shutil.copyfile(datafile, datafile + ".old")
+                except asyncio.CancelledError:
+                    raise
+                except:
+                    LOGGER.error("Failed to backup data file", exc_info=True)
             LOGGER.info("Saving {} messages".format(len(self.messages)))
-            save_data = struct.pack("=QQI", self.last_commit_attempt, self.last_real_commit, len(self.messages))
+            save_data = NEW_SAVE_MAGIC + struct.pack("=QQQQI", 1, self.last_commit_attempt, self.last_real_commit, self.messages_in_commit, len(self.messages))
             for message in self.messages:
                 save_data += message.encode("utf-8") + b"\0"
             if process is not None:
@@ -190,13 +227,16 @@ class RNNBot:
                                 if iteration is None:
                                     response = config.ITER_NO_DATA.format(
                                         to_next=format_time(self.next_commit(now) - now),
+                                        in_next=len(self.messages),
                                     )
                                 else:
                                     response = config.ITER_MESSAGE.format(
                                         iteration=iteration[0],
                                         loss=iteration[1],
                                         from_last=format_time(now - self.last_real_commit if self.last_real_commit else None),
+                                        in_last=self.messages_in_commit,
                                         to_next=format_time(self.next_commit(now) - now),
+                                        in_next=len(self.messages),
                                     )
                                 await bot.request("sendMessage", {
                                     "chat_id": message["chat"]["id"],
