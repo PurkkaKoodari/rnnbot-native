@@ -47,8 +47,8 @@ bool utf8toww(wwchar_t *dst, const char *src) {
                         if (((cnt = *src++) & 0xc0) != 0x80) return false;
                         wch = ((wch & 0xffff) << 6) | (cnt & 0x3f);
                         if (!(wch & ~0xffff)) return false;
-                    } else if (!(wch & 0x7ff)) return false;
-                } else if (!(wch & 0x7f)) return false;
+                    } else if (!(wch & ~0x7ff)) return false;
+                } else if (!(wch & ~0x7f)) return false;
             } else return false;
         }
         *dst++ = wch;
