@@ -836,7 +836,7 @@ static void iteration_v2() {
         // repeat previous steps for hidden1 layer
         // dh1 = Wh1h2_T @ dh2 + dh1next
         copy_double(dh1, dh1next, hidden_size);
-        mul_mat_col(hidden_size, vocab_size, Wh1h2_T, dh2, dh1);
+        mul_mat_col(hidden_size, hidden_size, Wh1h2_T, dh2, dh1);
         // dh1 = (1 - h1s[t]^2) * dh1
         rev_tanh_vec(hidden_size, dh1, h1s[t]);
         // dbh1 += dh1
