@@ -566,7 +566,7 @@ static void init_from_stdin() {
 
 static void dump_to_stdout() {
     static const size_t new_version_magic = 0;
-    static const size_t version = 1;
+    static const size_t version = 2;
     write_size_t(&new_version_magic, 1);
     write_size_t(&version, 1);
 
