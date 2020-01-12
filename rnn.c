@@ -157,36 +157,61 @@ static const size_t sample_length = 200;
 
 static size_t hidden_size;
 
+/* weights input->hidden */
 static double *Wxh;
+/* weights hidden->hidden */
 static double *Whh;
+/* weights hidden->output */
 static double *Why;
+/* bias hidden */
 static double *bh;
+/* bias output */
 static double *by;
 
+/* cached transpose of Why */
 static double *Why_T;
+/* cached transpose of Whh */
 static double *Whh_T;
 
+/* Wxh learning memory */
 static double *mWxh;
+/* Whh learning memory */
 static double *mWhh;
+/* Why learning memory */
 static double *mWhy;
+/* bh learning memory */
 static double *mbh;
+/* by learning memory */
 static double *mby;
 
+/* Wxh delta: how far off from "desired" it was */
 static double *dWxh;
+/* Whh delta: how far off from "desired" it was */
 static double *dWhh;
+/* Why delta: how far off from "desired" it was */
 static double *dWhy;
+/* bh delta: how far off from "desired" it was */
 static double *dbh;
+/* by delta: how far off from "desired" it was */
 static double *dby;
 
+/* values of hidden layer in previous iteration */
 static double *hprev;
+/* values of input layer */
 static double **xs;
+/* values of hidden layer for previous char (overlaps hs) */
 static double **phs;
+/* values of hidden layer for this char */
 static double **hs;
+/* values of output layer */
 static double **ys;
+/* probabilities of output chars */
 static double **ps;
 
 static double *dhnext;
+/* output layer delta: how far off from "desired" the value was */
 static double *dy;
+/* hidden layer delta: how far off from "desired" the value was */
 static double *dh;
 
 static double smooth_loss;
@@ -449,34 +474,52 @@ static void iteration() {
     transpose_mat(vocab_size, hidden_size, Why, Why_T);
     transpose_mat(hidden_size, hidden_size, Whh, Whh_T);
 
+    // if at end of input, reset to start and reset hidden layer to zeroes
     if (p + seq_length + 1 >= input_len) {
         zero_double(hprev, hidden_size);
         p = 0;
     }
 
+    // input = input_data[p : p+seq_length]
     const symbol_t *inputs = &input_data[p];
+    // training output = input_data[p+1 : p+seq_length+1]
     const symbol_t *targets = &input_data[p + 1];
 
+    // initialize loss at 0
     double loss = 0.0;
+    // initialize hidden layer at previous training iteration's value
     copy_double(phs[0], hprev, hidden_size);
+
+    // t is the character position in the training sequence
     for (size_t t = 0; t < seq_length; t++) {
+        // set input neurons for the round, xs[t], to 1 for the current input char
         zero_double(xs[t], vocab_size);
         xs[t][inputs[t]] = 1;
+
+        // compute new values of hidden layer
         // hs[t] = Wxh @ xs[t] + Whh @ hs[t-1] + bh
         copy_double(hs[t], bh, hidden_size);
         mul_mat_col(hidden_size, vocab_size, Wxh, xs[t], hs[t]);
         mul_mat_col(hidden_size, hidden_size, Whh, phs[t], hs[t]);
+        // apply activation function to hidden layer
         // hs[t] = tanh(hs[t])
         tanh_vec(hidden_size, hs[t]);
+
+        // compute new values of output layer
         // ys[t] = Why @ hs[t] + by
         copy_double(ys[t], by, vocab_size);
         mul_mat_col(vocab_size, hidden_size, Why, hs[t], ys[t]);
+
+        // compute the probabilities of each char from the output layer values
         // ps[t] = exp(ps[t]) / sum(exp(ps[t]))
         vec_to_exp_probs(vocab_size, ys[t], ps[t]);
+
+        // compute the loss
         // loss += -log(ps[t][targets[t]])
         loss += -log(ps[t][targets[t]]);
     }
 
+    // initialize deltas to zero
     zero_double(dWxh, hidden_size * vocab_size);
     zero_double(dWhh, hidden_size * hidden_size);
     zero_double(dWhy, vocab_size * hidden_size);
@@ -484,39 +527,57 @@ static void iteration() {
     zero_double(dby, vocab_size);
     zero_double(dhnext, hidden_size);
 
+    // compute deltas backward from end of training sequence
     for (size_t t = seq_length - 1; t != (size_t) -1; t--) {
+        // output delta = difference from "everything 0 except the correct char"
         copy_double(dy, ps[t], vocab_size);
         dy[targets[t]] -= 1;
+
+        // backpropagate output delta to hidden->output weights and output bias
         // dWhy += dy @ hs[t]
         mul_col_row(vocab_size, hidden_size, dy, hs[t], dWhy);
         // dby += dy
         add_double(vocab_size, dy, dby);
+
+        // hidden delta = hidden delta from next char + delta from output
         // dh = Why_T @ dy + dhnext
         copy_double(dh, dhnext, hidden_size);
         mul_mat_col(hidden_size, vocab_size, Why_T, dy, dh);
+
+        // reverse activation function
         // dh = (1 - hs[t]^2) * dh
         rev_tanh_vec(hidden_size, dh, hs[t]);
+
+        // backpropagate hidden delta to hidden->hidden, input->hidden weights and hidden bias
         // dbh += dh
         add_double(hidden_size, dh, dbh);
         // dWxh += dh @ xs[t]
         mul_col_row(hidden_size, vocab_size, dh, xs[t], dWxh);
         // dWhh += dh @ hs[t-1]
         mul_col_row(hidden_size, hidden_size, dh, phs[t], dWhh);
+
+        // compute hidden delta for prev char from current hidden delta
         // dhnext = Whh_T @ dh
         zero_double(dhnext, hidden_size);
         mul_mat_col(hidden_size, hidden_size, Whh_T, dh, dhnext);
     }
 
+    // clip delta values to prevent values from exploding
     clip_double(dWxh, hidden_size * vocab_size, 5.0);
     clip_double(dWhh, hidden_size * hidden_size, 5.0);
     clip_double(dWhy, vocab_size * hidden_size, 5.0);
     clip_double(dbh, hidden_size, 5.0);
     clip_double(dby, vocab_size, 5.0);
 
+    // save latest values of hidden layer for next training iteration
     copy_double(hprev, hs[seq_length - 1], hidden_size);
 
+    // track loss smoothly, as it can vary wildly between iterations
     smooth_loss = smooth_loss * 0.999 + loss * 0.001;
 
+    // update weights and biases using deltas:
+    // memory += delta^2
+    // value += -rate * delta / sqrt(mem + 1e-8)
     learn_double(hidden_size * vocab_size, dWxh, mWxh, Wxh, learning_rate);
     learn_double(hidden_size * hidden_size, dWhh, mWhh, Whh, learning_rate);
     learn_double(vocab_size * hidden_size, dWhy, mWhy, Why, learning_rate);
