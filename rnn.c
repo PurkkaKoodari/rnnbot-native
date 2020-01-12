@@ -492,6 +492,8 @@ static void init_from_stdin_v1() {
 }
 
 static void init_from_stdin_v2() {
+    init_input_from_stdin();
+
     alloc_model();
 
     read_double(Wxh1, hidden_size * vocab_size);
