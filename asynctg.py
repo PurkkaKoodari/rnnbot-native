@@ -96,7 +96,7 @@ class AsyncUpdateIterator:
             try:
                 return next(self._updates)
             except StopIteration:
-                LOGGER.info("Fetching more updates")
+                LOGGER.debug("Fetching more updates")
                 self._updates = iter(await self._bot.get_updates())
 
 class ApiError(Exception):

@@ -297,6 +297,6 @@ if __name__ == "__main__":
     handler = logging.FileHandler("rnn.log")
     handler.setFormatter(formatter)
     logging.getLogger().addHandler(handler)
-    logging.getLogger().setLevel(logging.DEBUG)
+    logging.getLogger().setLevel(logging.INFO)
 
     asyncio.get_event_loop().run_until_complete(RNNBot().run())
