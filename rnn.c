@@ -51,21 +51,23 @@ static void ignore_signal(int dummy) {}
 #define alloc_symbol(n) alloc_typed(symbol_t, n)
 #define alloc_wwchar(n) alloc_typed(wwchar_t, n)
 
-static void check_read(void *ptr, size_t size, size_t n) {
-    if (fread(ptr, size, n, stdin) != n) fail("failed to read data");
-}
+#define check_read(ptr, size, n) \
+    do { \
+        if (fread(ptr, size, n, stdin) != n) fail("failed to read data"); \
+    } while(0)
 
-#define read_typed(type, ptr, n) check_read((void *) ptr, sizeof(type), n)
+#define read_typed(type, ptr, n) check_read((void *) (ptr), sizeof(type), n)
 #define read_double(ptr, n) read_typed(double, ptr, n)
 #define read_size_t(ptr, n) read_typed(size_t, ptr, n)
 #define read_symbol(ptr, n) read_typed(symbol_t, ptr, n)
 #define read_wwchar(ptr, n) read_typed(wwchar_t, ptr, n)
 
-static void check_write(const void *ptr, size_t size, size_t n) {
-    if (fwrite(ptr, size, n, stdout) != n) fail("failed to write data");
-}
+#define check_write(ptr, size, n) \
+    do { \
+        if (fwrite(ptr, size, n, stdout) != n) fail("failed to write data"); \
+    } while(0)
 
-#define write_typed(type, ptr, n) check_write((void *) ptr, sizeof(type), n)
+#define write_typed(type, ptr, n) check_write((void *) (ptr), sizeof(type), n)
 #define write_double(ptr, n) write_typed(double, ptr, n)
 #define write_size_t(ptr, n) write_typed(size_t, ptr, n)
 #define write_symbol(ptr, n) write_typed(symbol_t, ptr, n)
@@ -157,62 +159,95 @@ static const size_t sample_length = 200;
 
 static size_t hidden_size;
 
-/* weights input->hidden */
-static double *Wxh;
-/* weights hidden->hidden */
-static double *Whh;
-/* weights hidden->output */
-static double *Why;
-/* bias hidden */
-static double *bh;
+/* weights input->hidden1 */
+static double *Wxh1;
+/* weights hidden1->hidden1 */
+static double *Wh1h1;
+/* weights hidden1->hidden2 */
+static double *Wh1h2;
+/* weights hidden2->hidden2 */
+static double *Wh2h2;
+/* weights hidden2->output */
+static double *Wh2y;
+/* bias hidden1 */
+static double *bh1;
+/* bias hidden2 */
+static double *bh2;
 /* bias output */
 static double *by;
 
-/* cached transpose of Why */
-static double *Why_T;
-/* cached transpose of Whh */
-static double *Whh_T;
+/* cached transpose of Wh2y */
+static double *Wh2y_T;
+/* cached transpose of Wh2h2 */
+static double *Wh2h2_T;
+/* cached transpose of Wh1h2 */
+static double *Wh1h2_T;
+/* cached transpose of Wh1h1 */
+static double *Wh1h1_T;
 
-/* Wxh learning memory */
-static double *mWxh;
-/* Whh learning memory */
-static double *mWhh;
-/* Why learning memory */
-static double *mWhy;
-/* bh learning memory */
-static double *mbh;
+/* Wxh1 learning memory */
+static double *mWxh1;
+/* Wh1h1 learning memory */
+static double *mWh1h1;
+/* Wh1h2 learning memory */
+static double *mWh1h2;
+/* Wh2h2 learning memory */
+static double *mWh2h2;
+/* Wh2y learning memory */
+static double *mWh2y;
+/* bh1 learning memory */
+static double *mbh1;
+/* bh2 learning memory */
+static double *mbh2;
 /* by learning memory */
 static double *mby;
 
-/* Wxh delta: how far off from "desired" it was */
-static double *dWxh;
-/* Whh delta: how far off from "desired" it was */
-static double *dWhh;
-/* Why delta: how far off from "desired" it was */
-static double *dWhy;
-/* bh delta: how far off from "desired" it was */
-static double *dbh;
+/* Wxh1 delta: how far off from "desired" it was */
+static double *dWxh1;
+/* Wh1h1 delta: how far off from "desired" it was */
+static double *dWh1h1;
+/* Wh1h2 delta: how far off from "desired" it was */
+static double *dWh1h2;
+/* Wh2h2 delta: how far off from "desired" it was */
+static double *dWh2h2;
+/* Wh2y delta: how far off from "desired" it was */
+static double *dWh2y;
+/* bh1 delta: how far off from "desired" it was */
+static double *dbh1;
+/* bh2 delta: how far off from "desired" it was */
+static double *dbh2;
 /* by delta: how far off from "desired" it was */
 static double *dby;
 
-/* values of hidden layer in previous iteration */
-static double *hprev;
+/* values of hidden1 layer in previous iteration */
+static double *h1prev;
+/* values of hidden2 layer in previous iteration */
+static double *h2prev;
 /* values of input layer */
 static double **xs;
 /* values of hidden layer for previous char (overlaps hs) */
-static double **phs;
+static double **ph1s;
 /* values of hidden layer for this char */
-static double **hs;
+static double **h1s;
+/* values of output layer */
+static double **ph2s;
+/* values of hidden layer for this char */
+static double **h2s;
 /* values of output layer */
 static double **ys;
 /* probabilities of output chars */
 static double **ps;
 
-static double *dhnext;
+/* delta of hidden1 layer backpropagated from next char */
+static double *dh1next;
+/* delta of hidden2 layer backpropagated from next char */
+static double *dh2next;
 /* output layer delta: how far off from "desired" the value was */
 static double *dy;
-/* hidden layer delta: how far off from "desired" the value was */
-static double *dh;
+/* hidden1 layer delta: how far off from "desired" the value was */
+static double *dh1;
+/* hidden2 layer delta: how far off from "desired" the value was */
+static double *dh2;
 
 static double smooth_loss;
 
@@ -225,71 +260,110 @@ static size_t input_len;
 
 static size_t n, p;
 
+static void iteration_v1();
+static void iteration_v2();
+static void sample_v1(size_t, wwchar_t *, symbol_t);
+static void sample_v2(size_t, wwchar_t *, symbol_t);
+
+static void (*iteration_func)();
+static void (*sample_func)(size_t, wwchar_t *, symbol_t);
+
 static void alloc_model() {
-    Wxh = alloc_double(hidden_size * vocab_size);
-    Whh = alloc_double(hidden_size * hidden_size);
-    Why = alloc_double(vocab_size * hidden_size);
-    bh = alloc_double(hidden_size);
+    Wxh1 = alloc_double(hidden_size * vocab_size);
+    Wh1h1 = alloc_double(hidden_size * hidden_size);
+    Wh1h2 = alloc_double(hidden_size * hidden_size);
+    Wh2h2 = alloc_double(hidden_size * hidden_size);
+    Wh2y = alloc_double(vocab_size * hidden_size);
+    bh1 = alloc_double(hidden_size);
+    bh2 = alloc_double(hidden_size);
     by = alloc_double(vocab_size);
 
-    Why_T = alloc_double(vocab_size * hidden_size);
-    Whh_T = alloc_double(hidden_size * hidden_size);
+    Wh2y_T = alloc_double(vocab_size * hidden_size);
+    Wh2h2_T = alloc_double(hidden_size * hidden_size);
+    Wh1h2_T = alloc_double(hidden_size * hidden_size);
+    Wh1h1_T = alloc_double(hidden_size * hidden_size);
 
-    mWxh = alloc_double(hidden_size * vocab_size);
-    mWhh = alloc_double(hidden_size * hidden_size);
-    mWhy = alloc_double(vocab_size * hidden_size);
-    mbh = alloc_double(hidden_size);
+    mWxh1 = alloc_double(hidden_size * vocab_size);
+    mWh1h1 = alloc_double(hidden_size * hidden_size);
+    mWh1h2 = alloc_double(hidden_size * hidden_size);
+    mWh2h2 = alloc_double(hidden_size * hidden_size);
+    mWh2y = alloc_double(vocab_size * hidden_size);
+    mbh1 = alloc_double(hidden_size);
+    mbh2 = alloc_double(hidden_size);
     mby = alloc_double(vocab_size);
 
-    hprev = alloc_double(hidden_size);
+    h1prev = alloc_double(hidden_size);
+    h2prev = alloc_double(hidden_size);
 
     xs = alloc_2d_double(seq_length, vocab_size);
-    phs = alloc_2d_double(seq_length + 1, hidden_size);
-    hs = &phs[1];
+    ph1s = alloc_2d_double(seq_length + 1, hidden_size);
+    h1s = &ph1s[1];
+    ph2s = alloc_2d_double(seq_length + 1, hidden_size);
+    h2s = &ph2s[1];
     ys = alloc_2d_double(seq_length, vocab_size);
     ps = alloc_2d_double(seq_length, vocab_size);
 
-    dWxh = alloc_double(hidden_size * vocab_size);
-    dWhh = alloc_double(hidden_size * hidden_size);
-    dWhy = alloc_double(vocab_size * hidden_size);
-    dbh = alloc_double(hidden_size);
+    dWxh1 = alloc_double(hidden_size * vocab_size);
+    dWh1h1 = alloc_double(hidden_size * hidden_size);
+    dWh1h2 = alloc_double(hidden_size * hidden_size);
+    dWh2h2 = alloc_double(hidden_size * hidden_size);
+    dWh2y = alloc_double(vocab_size * hidden_size);
+    dbh1 = alloc_double(hidden_size);
+    dbh2 = alloc_double(hidden_size);
     dby = alloc_double(vocab_size);
-    dhnext = alloc_double(hidden_size);
+    dh1next = alloc_double(hidden_size);
+    dh2next = alloc_double(hidden_size);
     dy = alloc_double(vocab_size);
-    dh = alloc_double(hidden_size);
+    dh1 = alloc_double(hidden_size);
+    dh2 = alloc_double(hidden_size);
 }
 
 static void free_model() {
-    free(Wxh);
-    free(Whh);
-    free(Why);
-    free(bh);
+    free(Wxh1);
+    free(Wh1h1);
+    free(Wh1h2);
+    free(Wh2h2);
+    free(Wh2y);
+    free(bh1);
+    free(bh2);
     free(by);
 
-    free(Whh_T);
-    free(Why_T);
+    free(Wh2y_T);
+    free(Wh2h2_T);
+    free(Wh1h2_T);
+    free(Wh1h1_T);
 
-    free(mWxh);
-    free(mWhh);
-    free(mWhy);
-    free(mbh);
+    free(mWxh1);
+    free(mWh1h1);
+    free(mWh1h2);
+    free(mWh2h2);
+    free(mWh2y);
+    free(mbh1);
+    free(mbh2);
     free(mby);
 
-    free(hprev);
+    free(h1prev);
+    free(h2prev);
 
     free_2d((void **) xs, seq_length);
-    free_2d((void **) phs, seq_length + 1);
+    free_2d((void **) ph1s, seq_length + 1);
+    free_2d((void **) ph2s, seq_length + 1);
     free_2d((void **) ys, seq_length);
     free_2d((void **) ps, seq_length);
 
-    free(dWxh);
-    free(dWhh);
-    free(dWhy);
-    free(dbh);
+    free(dWxh1);
+    free(dWh1h1);
+    free(dWh1h2);
+    free(dWh2h2);
+    free(dWh2y);
+    free(dbh1);
+    free(dbh2);
     free(dby);
-    free(dhnext);
+    free(dh1next);
+    free(dh2next);
     free(dy);
-    free(dh);
+    free(dh1);
+    free(dh2);
 
     map_free(&vocabulary, sizeof(symbol_t));
 }
@@ -346,48 +420,37 @@ static void init_from_text() {
 
     alloc_model();
 
-    nrand_double(Wxh, hidden_size * vocab_size);
-    nrand_double(Whh, hidden_size * hidden_size);
-    nrand_double(Why, vocab_size * hidden_size);
-    zero_double(bh, hidden_size);
+    nrand_double(Wxh1, hidden_size * vocab_size);
+    nrand_double(Wh1h1, hidden_size * hidden_size);
+    nrand_double(Wh1h2, hidden_size * hidden_size);
+    nrand_double(Wh2h2, hidden_size * hidden_size);
+    nrand_double(Wh2y, vocab_size * hidden_size);
+    zero_double(bh1, hidden_size);
+    zero_double(bh2, hidden_size);
     zero_double(by, vocab_size);
 
-    zero_double(mWxh, hidden_size * vocab_size);
-    zero_double(mWhh, hidden_size * hidden_size);
-    zero_double(mWhy, vocab_size * hidden_size);
-    zero_double(mbh, hidden_size);
+    zero_double(mWxh1, hidden_size * vocab_size);
+    zero_double(mWh1h1, hidden_size * hidden_size);
+    zero_double(mWh1h2, hidden_size * hidden_size);
+    zero_double(mWh2h2, hidden_size * hidden_size);
+    zero_double(mWh2y, vocab_size * hidden_size);
+    zero_double(mbh1, hidden_size);
+    zero_double(mbh2, hidden_size);
     zero_double(mby, vocab_size);
 
-    zero_double(hprev, hidden_size);
+    zero_double(h1prev, hidden_size);
+    zero_double(h2prev, hidden_size);
     
     n = 0;
     p = 0;
 
     smooth_loss = -log(1.0 / vocab_size) * seq_length;
+
+    iteration_func = iteration_v2;
+    sample_func = sample_v2;
 }
 
-static void init_from_stdin() {
-    size_t version;
-    read_size_t(&vocab_size, 1);
-
-    if (vocab_size != 0) {
-        // version 0
-        read_size_t(&input_len, 1);
-        hidden_size = 300;
-    } else {
-        // versioned file
-        read_size_t(&version, 1);
-        if (version == 1) {
-            read_size_t(&hidden_size, 1);
-            read_size_t(&vocab_size, 1);
-            read_size_t(&input_len, 1);
-        } else fail("unknown data version");
-    }
-
-    fprintf(stderr, "input size %lu\n", input_len);
-    fprintf(stderr, "vocabulary size %lu\n", vocab_size);
-    fprintf(stderr, "hidden layer size %lu\n", hidden_size);
-    
+static void init_input_from_stdin() {
     map_new(&vocabulary);
 
     wwchar_t codepoint;
@@ -398,27 +461,99 @@ static void init_from_stdin() {
 
     input_data = alloc_symbol(input_len);
     read_symbol(input_data, input_len);
+}
+
+static void init_from_stdin_v1() {
+    init_input_from_stdin();
 
     alloc_model();
 
-    read_double(Wxh, hidden_size * vocab_size);
-    read_double(Whh, hidden_size * hidden_size);
-    read_double(Why, vocab_size * hidden_size);
-    read_double(bh, hidden_size);
+    read_double(Wxh1, hidden_size * vocab_size);
+    read_double(Wh1h1, hidden_size * hidden_size);
+    read_double(Wh2y, vocab_size * hidden_size);
+    read_double(bh1, hidden_size);
     read_double(by, vocab_size);
 
-    read_double(mWxh, hidden_size * vocab_size);
-    read_double(mWhh, hidden_size * hidden_size);
-    read_double(mWhy, vocab_size * hidden_size);
-    read_double(mbh, hidden_size);
+    read_double(mWxh1, hidden_size * vocab_size);
+    read_double(mWh1h1, hidden_size * hidden_size);
+    read_double(mWh2y, vocab_size * hidden_size);
+    read_double(mbh1, hidden_size);
     read_double(mby, vocab_size);
 
-    read_double(hprev, hidden_size);
+    read_double(h1prev, hidden_size);
 
     read_double(&n, 1);
     read_double(&p, 1);
 
     read_double(&smooth_loss, 1);
+
+    iteration_func = iteration_v1;
+    sample_func = sample_v1;
+}
+
+static void init_from_stdin_v2() {
+    alloc_model();
+
+    read_double(Wxh1, hidden_size * vocab_size);
+    read_double(Wh1h1, hidden_size * hidden_size);
+    read_double(Wh1h2, hidden_size * hidden_size);
+    read_double(Wh2h2, hidden_size * hidden_size);
+    read_double(Wh2y, vocab_size * hidden_size);
+    read_double(bh1, hidden_size);
+    read_double(bh2, hidden_size);
+    read_double(by, vocab_size);
+
+    read_double(mWxh1, hidden_size * vocab_size);
+    read_double(mWh1h1, hidden_size * hidden_size);
+    read_double(mWh1h2, hidden_size * hidden_size);
+    read_double(mWh2h2, hidden_size * hidden_size);
+    read_double(mWh2y, vocab_size * hidden_size);
+    read_double(mbh1, hidden_size);
+    read_double(mbh2, hidden_size);
+    read_double(mby, vocab_size);
+
+    read_double(h1prev, hidden_size);
+    read_double(h2prev, hidden_size);
+
+    read_double(&n, 1);
+    read_double(&p, 1);
+
+    read_double(&smooth_loss, 1);
+
+    iteration_func = iteration_v2;
+    sample_func = sample_v2;
+}
+
+static void init_from_stdin() {
+    size_t version = 0;
+    read_size_t(&vocab_size, 1);
+
+    if (vocab_size != 0) {
+        // version 0
+        read_size_t(&input_len, 1);
+        hidden_size = 300;
+    } else {
+        // versioned file
+        read_size_t(&version, 1);
+        if (version == 2 || version == 1) {
+            read_size_t(&hidden_size, 1);
+            read_size_t(&vocab_size, 1);
+            read_size_t(&input_len, 1);
+        } else fail("unknown data version");
+    }
+
+    if (vocab_size > 0x110000) fail("invalid vocabulary size; bad state file?");
+
+    fprintf(stderr, "file version %lu\n", version);
+    fprintf(stderr, "input size %lu\n", input_len);
+    fprintf(stderr, "vocabulary size %lu\n", vocab_size);
+    fprintf(stderr, "hidden layer size %lu\n", hidden_size);
+
+    if (version < 2) {
+        init_from_stdin_v1();
+    } else {
+        init_from_stdin_v2();
+    }
 
     fprintf(stderr, "iteration %lu\n", n);
     fprintf(stderr, "loss %f\n", smooth_loss);
@@ -447,19 +582,26 @@ static void dump_to_stdout() {
 
     write_symbol(input_data, input_len);
 
-    write_double(Wxh, hidden_size * vocab_size);
-    write_double(Whh, hidden_size * hidden_size);
-    write_double(Why, vocab_size * hidden_size);
-    write_double(bh, hidden_size);
+    write_double(Wxh1, hidden_size * vocab_size);
+    write_double(Wh1h1, hidden_size * hidden_size);
+    write_double(Wh1h2, hidden_size * hidden_size);
+    write_double(Wh2h2, hidden_size * hidden_size);
+    write_double(Wh2y, vocab_size * hidden_size);
+    write_double(bh1, hidden_size);
+    write_double(bh2, hidden_size);
     write_double(by, vocab_size);
 
-    write_double(mWxh, hidden_size * vocab_size);
-    write_double(mWhh, hidden_size * hidden_size);
-    write_double(mWhy, vocab_size * hidden_size);
-    write_double(mbh, hidden_size);
+    write_double(mWxh1, hidden_size * vocab_size);
+    write_double(mWh1h1, hidden_size * hidden_size);
+    write_double(mWh1h2, hidden_size * hidden_size);
+    write_double(mWh2h2, hidden_size * hidden_size);
+    write_double(mWh2y, vocab_size * hidden_size);
+    write_double(mbh1, hidden_size);
+    write_double(mbh2, hidden_size);
     write_double(mby, vocab_size);
 
-    write_double(hprev, hidden_size);
+    write_double(h1prev, hidden_size);
+    write_double(h2prev, hidden_size);
 
     write_double(&n, 1);
     write_double(&p, 1);
@@ -469,14 +611,14 @@ static void dump_to_stdout() {
     write_typed(uint64_t, &dump_sanity, 1);
 }
 
-static void iteration() {
+static void iteration_v1() {
     // compute transposes here since matrices are not modified until at end of loop
-    transpose_mat(vocab_size, hidden_size, Why, Why_T);
-    transpose_mat(hidden_size, hidden_size, Whh, Whh_T);
+    transpose_mat(vocab_size, hidden_size, Wh2y, Wh2y_T);
+    transpose_mat(hidden_size, hidden_size, Wh1h1, Wh1h1_T);
 
     // if at end of input, reset to start and reset hidden layer to zeroes
     if (p + seq_length + 1 >= input_len) {
-        zero_double(hprev, hidden_size);
+        zero_double(h1prev, hidden_size);
         p = 0;
     }
 
@@ -488,7 +630,7 @@ static void iteration() {
     // initialize loss at 0
     double loss = 0.0;
     // initialize hidden layer at previous training iteration's value
-    copy_double(phs[0], hprev, hidden_size);
+    copy_double(ph1s[0], h1prev, hidden_size);
 
     // t is the character position in the training sequence
     for (size_t t = 0; t < seq_length; t++) {
@@ -498,17 +640,17 @@ static void iteration() {
 
         // compute new values of hidden layer
         // hs[t] = Wxh @ xs[t] + Whh @ hs[t-1] + bh
-        copy_double(hs[t], bh, hidden_size);
-        mul_mat_col(hidden_size, vocab_size, Wxh, xs[t], hs[t]);
-        mul_mat_col(hidden_size, hidden_size, Whh, phs[t], hs[t]);
+        copy_double(h1s[t], bh1, hidden_size);
+        mul_mat_col(hidden_size, vocab_size, Wxh1, xs[t], h1s[t]);
+        mul_mat_col(hidden_size, hidden_size, Wh1h1, ph1s[t], h1s[t]);
         // apply activation function to hidden layer
         // hs[t] = tanh(hs[t])
-        tanh_vec(hidden_size, hs[t]);
+        tanh_vec(hidden_size, h1s[t]);
 
         // compute new values of output layer
         // ys[t] = Why @ hs[t] + by
         copy_double(ys[t], by, vocab_size);
-        mul_mat_col(vocab_size, hidden_size, Why, hs[t], ys[t]);
+        mul_mat_col(vocab_size, hidden_size, Wh2y, h1s[t], ys[t]);
 
         // compute the probabilities of each char from the output layer values
         // ps[t] = exp(ps[t]) / sum(exp(ps[t]))
@@ -520,12 +662,12 @@ static void iteration() {
     }
 
     // initialize deltas to zero
-    zero_double(dWxh, hidden_size * vocab_size);
-    zero_double(dWhh, hidden_size * hidden_size);
-    zero_double(dWhy, vocab_size * hidden_size);
-    zero_double(dbh, hidden_size);
+    zero_double(dWxh1, hidden_size * vocab_size);
+    zero_double(dWh1h1, hidden_size * hidden_size);
+    zero_double(dWh2y, vocab_size * hidden_size);
+    zero_double(dbh1, hidden_size);
     zero_double(dby, vocab_size);
-    zero_double(dhnext, hidden_size);
+    zero_double(dh1next, hidden_size);
 
     // compute deltas backward from end of training sequence
     for (size_t t = seq_length - 1; t != (size_t) -1; t--) {
@@ -535,42 +677,42 @@ static void iteration() {
 
         // backpropagate output delta to hidden->output weights and output bias
         // dWhy += dy @ hs[t]
-        mul_col_row(vocab_size, hidden_size, dy, hs[t], dWhy);
+        mul_col_row(vocab_size, hidden_size, dy, h1s[t], dWh2y);
         // dby += dy
         add_double(vocab_size, dy, dby);
 
         // hidden delta = hidden delta from next char + delta from output
         // dh = Why_T @ dy + dhnext
-        copy_double(dh, dhnext, hidden_size);
-        mul_mat_col(hidden_size, vocab_size, Why_T, dy, dh);
+        copy_double(dh1, dh1next, hidden_size);
+        mul_mat_col(hidden_size, vocab_size, Wh2y_T, dy, dh1);
 
         // reverse activation function
         // dh = (1 - hs[t]^2) * dh
-        rev_tanh_vec(hidden_size, dh, hs[t]);
+        rev_tanh_vec(hidden_size, dh1, h1s[t]);
 
         // backpropagate hidden delta to hidden->hidden, input->hidden weights and hidden bias
         // dbh += dh
-        add_double(hidden_size, dh, dbh);
+        add_double(hidden_size, dh1, dbh1);
         // dWxh += dh @ xs[t]
-        mul_col_row(hidden_size, vocab_size, dh, xs[t], dWxh);
+        mul_col_row(hidden_size, vocab_size, dh1, xs[t], dWxh1);
         // dWhh += dh @ hs[t-1]
-        mul_col_row(hidden_size, hidden_size, dh, phs[t], dWhh);
+        mul_col_row(hidden_size, hidden_size, dh1, ph1s[t], dWh1h1);
 
         // compute hidden delta for prev char from current hidden delta
         // dhnext = Whh_T @ dh
-        zero_double(dhnext, hidden_size);
-        mul_mat_col(hidden_size, hidden_size, Whh_T, dh, dhnext);
+        zero_double(dh1next, hidden_size);
+        mul_mat_col(hidden_size, hidden_size, Wh1h1_T, dh1, dh1next);
     }
 
     // clip delta values to prevent values from exploding
-    clip_double(dWxh, hidden_size * vocab_size, 5.0);
-    clip_double(dWhh, hidden_size * hidden_size, 5.0);
-    clip_double(dWhy, vocab_size * hidden_size, 5.0);
-    clip_double(dbh, hidden_size, 5.0);
+    clip_double(dWxh1, hidden_size * vocab_size, 5.0);
+    clip_double(dWh1h1, hidden_size * hidden_size, 5.0);
+    clip_double(dWh2y, vocab_size * hidden_size, 5.0);
+    clip_double(dbh1, hidden_size, 5.0);
     clip_double(dby, vocab_size, 5.0);
 
     // save latest values of hidden layer for next training iteration
-    copy_double(hprev, hs[seq_length - 1], hidden_size);
+    copy_double(h1prev, h1s[seq_length - 1], hidden_size);
 
     // track loss smoothly, as it can vary wildly between iterations
     smooth_loss = smooth_loss * 0.999 + loss * 0.001;
@@ -578,10 +720,166 @@ static void iteration() {
     // update weights and biases using deltas:
     // memory += delta^2
     // value += -rate * delta / sqrt(mem + 1e-8)
-    learn_double(hidden_size * vocab_size, dWxh, mWxh, Wxh, learning_rate);
-    learn_double(hidden_size * hidden_size, dWhh, mWhh, Whh, learning_rate);
-    learn_double(vocab_size * hidden_size, dWhy, mWhy, Why, learning_rate);
-    learn_double(hidden_size, dbh, mbh, bh, learning_rate);
+    learn_double(hidden_size * vocab_size, dWxh1, mWxh1, Wxh1, learning_rate);
+    learn_double(hidden_size * hidden_size, dWh1h1, mWh1h1, Wh1h1, learning_rate);
+    learn_double(vocab_size * hidden_size, dWh2y, mWh2y, Wh2y, learning_rate);
+    learn_double(hidden_size, dbh1, mbh1, bh1, learning_rate);
+    learn_double(vocab_size, dby, mby, by, learning_rate);
+
+    p += seq_length;
+    n++;
+}
+
+static void iteration_v2() {
+    // compute transposes here since matrices are not modified until at end of loop
+    transpose_mat(vocab_size, hidden_size, Wh2y, Wh2y_T);
+    transpose_mat(hidden_size, hidden_size, Wh2h2, Wh2h2_T);
+    transpose_mat(hidden_size, hidden_size, Wh1h2, Wh1h2_T);
+    transpose_mat(hidden_size, hidden_size, Wh1h1, Wh1h1_T);
+
+    // if at end of input, reset to start and reset hidden layer to zeroes
+    if (p + seq_length + 1 >= input_len) {
+        zero_double(h1prev, hidden_size);
+        zero_double(h2prev, hidden_size);
+        p = 0;
+    }
+
+    // input = input_data[p : p+seq_length]
+    const symbol_t *inputs = &input_data[p];
+    // training output = input_data[p+1 : p+seq_length+1]
+    const symbol_t *targets = &input_data[p + 1];
+
+    // initialize loss at 0
+    double loss = 0.0;
+    // initialize hidden layer at previous training iteration's value
+    copy_double(ph1s[0], h1prev, hidden_size);
+    copy_double(ph2s[0], h2prev, hidden_size);
+
+    // t is the character position in the training sequence
+    for (size_t t = 0; t < seq_length; t++) {
+        // set input neurons for the round, xs[t], to 1 for the current input char
+        zero_double(xs[t], vocab_size);
+        xs[t][inputs[t]] = 1;
+
+        // compute new values of hidden1 layer
+        // hs[t] = Wxh1 @ xs[t] + Whh @ h1s[t-1] + bh1
+        copy_double(h1s[t], bh1, hidden_size);
+        mul_mat_col(hidden_size, vocab_size, Wxh1, xs[t], h1s[t]);
+        mul_mat_col(hidden_size, hidden_size, Wh1h1, ph1s[t], h1s[t]);
+        // apply activation function to hidden1 layer
+        // hs[t] = tanh(hs[t])
+        tanh_vec(hidden_size, h1s[t]);
+
+        // repeat previous steps for hidden2 layer
+        copy_double(h2s[t], bh2, hidden_size);
+        mul_mat_col(hidden_size, hidden_size, Wh1h2, h1s[t], h2s[t]);
+        mul_mat_col(hidden_size, hidden_size, Wh2h2, ph2s[t], h2s[t]);
+        tanh_vec(hidden_size, h2s[t]);
+
+        // compute new values of output layer
+        // ys[t] = Why @ hs[t] + by
+        copy_double(ys[t], by, vocab_size);
+        mul_mat_col(vocab_size, hidden_size, Wh2y, h2s[t], ys[t]);
+
+        // compute the probabilities of each char from the output layer values
+        // ps[t] = exp(ps[t]) / sum(exp(ps[t]))
+        vec_to_exp_probs(vocab_size, ys[t], ps[t]);
+
+        // compute the loss
+        // loss += -log(ps[t][targets[t]])
+        loss += -log(ps[t][targets[t]]);
+    }
+
+    // initialize deltas to zero
+    zero_double(dWxh1, hidden_size * vocab_size);
+    zero_double(dWh1h1, hidden_size * hidden_size);
+    zero_double(dWh1h2, hidden_size * hidden_size);
+    zero_double(dWh2h2, hidden_size * hidden_size);
+    zero_double(dWh2y, vocab_size * hidden_size);
+    zero_double(dbh1, hidden_size);
+    zero_double(dbh2, hidden_size);
+    zero_double(dby, vocab_size);
+    zero_double(dh1next, hidden_size);
+    zero_double(dh2next, hidden_size);
+
+    // compute deltas backward from end of training sequence
+    for (size_t t = seq_length - 1; t != (size_t) -1; t--) {
+        // output delta = difference from "everything 0 except the correct char"
+        copy_double(dy, ps[t], vocab_size);
+        dy[targets[t]] -= 1;
+
+        // backpropagate output delta to hidden2->output weights and output bias
+        // dWh2y += dy @ h2s[t]
+        mul_col_row(vocab_size, hidden_size, dy, h2s[t], dWh2y);
+        // dby += dy
+        add_double(vocab_size, dy, dby);
+
+        // hidden2 delta = hidden2 delta from next char + delta from output
+        // dh2 = Wh2y_T @ dy + dh2next
+        copy_double(dh2, dh2next, hidden_size);
+        mul_mat_col(hidden_size, vocab_size, Wh2y_T, dy, dh2);
+
+        // reverse activation function
+        // dh2 = (1 - h2s[t]^2) * dh2
+        rev_tanh_vec(hidden_size, dh2, h2s[t]);
+
+        // backpropagate hidden2 delta to hidden2->hidden2, hidden1->hidden2 weights and hidden bias
+        // dbh2 += dh2
+        add_double(hidden_size, dh2, dbh2);
+        // dWh1h2 += dh2 @ h1s[t]
+        mul_col_row(hidden_size, hidden_size, dh2, h1s[t], dWh1h2);
+        // dWh2h2 += dh2 @ h2s[t-1]
+        mul_col_row(hidden_size, hidden_size, dh2, ph2s[t], dWh2h2);
+
+        // repeat previous steps for hidden1 layer
+        // dh1 = Wh1h2_T @ dh2 + dh1next
+        copy_double(dh1, dh1next, hidden_size);
+        mul_mat_col(hidden_size, vocab_size, Wh1h2_T, dh2, dh1);
+        // dh1 = (1 - h1s[t]^2) * dh1
+        rev_tanh_vec(hidden_size, dh1, h1s[t]);
+        // dbh1 += dh1
+        add_double(hidden_size, dh1, dbh1);
+        // dWxh1 += dh1 @ xs[t]
+        mul_col_row(hidden_size, vocab_size, dh1, xs[t], dWxh1);
+        // dWh1h1 += dh1 @ h1s[t-1]
+        mul_col_row(hidden_size, hidden_size, dh1, ph1s[t], dWh1h1);
+
+        // compute hidden delta for prev char from current hidden delta
+        // dh1next = Wh1h1_T @ dh1
+        zero_double(dh1next, hidden_size);
+        mul_mat_col(hidden_size, hidden_size, Wh1h1_T, dh1, dh1next);
+        // dh2next = Wh2h2_T @ dh2
+        zero_double(dh2next, hidden_size);
+        mul_mat_col(hidden_size, hidden_size, Wh2h2_T, dh2, dh2next);
+    }
+
+    // clip delta values to prevent values from exploding
+    clip_double(dWxh1, hidden_size * vocab_size, 5.0);
+    clip_double(dWh1h1, hidden_size * hidden_size, 5.0);
+    clip_double(dWh1h2, hidden_size * hidden_size, 5.0);
+    clip_double(dWh2h2, hidden_size * hidden_size, 5.0);
+    clip_double(dWh2y, vocab_size * hidden_size, 5.0);
+    clip_double(dbh1, hidden_size, 5.0);
+    clip_double(dbh2, hidden_size, 5.0);
+    clip_double(dby, vocab_size, 5.0);
+
+    // save latest values of hidden layer for next training iteration
+    copy_double(h1prev, h1s[seq_length - 1], hidden_size);
+    copy_double(h2prev, h2s[seq_length - 1], hidden_size);
+
+    // track loss smoothly, as it can vary wildly between iterations
+    smooth_loss = smooth_loss * 0.999 + loss * 0.001;
+
+    // update weights and biases using deltas:
+    // memory += delta^2
+    // value += -rate * delta / sqrt(mem + 1e-8)
+    learn_double(hidden_size * vocab_size, dWxh1, mWxh1, Wxh1, learning_rate);
+    learn_double(hidden_size * hidden_size, dWh1h1, mWh1h1, Wh1h1, learning_rate);
+    learn_double(hidden_size * hidden_size, dWh1h2, mWh1h2, Wh1h2, learning_rate);
+    learn_double(hidden_size * hidden_size, dWh2h2, mWh2h2, Wh2h2, learning_rate);
+    learn_double(vocab_size * hidden_size, dWh2y, mWh2y, Wh2y, learning_rate);
+    learn_double(hidden_size, dbh1, mbh1, bh1, learning_rate);
+    learn_double(hidden_size, dbh2, mbh2, bh2, learning_rate);
     learn_double(vocab_size, dby, mby, by, learning_rate);
 
     p += seq_length;
@@ -598,25 +896,25 @@ static inline double choose_by_probs(const double *p) {
     return symbol;
 }
 
-static void sample(size_t length, wwchar_t *to, symbol_t seed) {
+static void sample_v1(size_t length, wwchar_t *to, symbol_t seed) {
     double *x = xs[0];
-    double *h = hs[0];
-    double *ph = phs[0];
+    double *h = h1s[0];
+    double *ph = ph1s[0];
     double *y = ys[0];
     double *p = ps[0];
-    copy_double(ph, hprev, hidden_size);
+    copy_double(ph, h1prev, hidden_size);
     zero_double(x, vocab_size);
     for (size_t i = 0; i < length; i++) {
         x[seed] = 1;
         // h = Wxh @ x + Whh @ ph + bh
-        copy_double(h, bh, hidden_size);
-        mul_mat_col(hidden_size, vocab_size, Wxh, x, h);
-        mul_mat_col(hidden_size, hidden_size, Whh, ph, h);
+        copy_double(h, bh1, hidden_size);
+        mul_mat_col(hidden_size, vocab_size, Wxh1, x, h);
+        mul_mat_col(hidden_size, hidden_size, Wh1h1, ph, h);
         // h = tanh(h)
         tanh_vec(hidden_size, h);
         // y = Why @ h + by
         copy_double(y, by, vocab_size);
-        mul_mat_col(vocab_size, hidden_size, Why, h, y);
+        mul_mat_col(vocab_size, hidden_size, Wh2y, h, y);
         // p = exp(p) / sum(exp(p))
         vec_to_exp_probs(vocab_size, y, p);
 
@@ -630,6 +928,52 @@ static void sample(size_t length, wwchar_t *to, symbol_t seed) {
 
         // ph = h
         copy_double(ph, h, hidden_size);
+    }
+}
+
+static void sample_v2(size_t length, wwchar_t *to, symbol_t seed) {
+    double *x = xs[0];
+    double *h1 = h1s[0];
+    double *ph1 = ph1s[0];
+    double *h2 = h2s[0];
+    double *ph2 = ph2s[0];
+    double *y = ys[0];
+    double *p = ps[0];
+    copy_double(ph1, h1prev, hidden_size);
+    copy_double(ph2, h2prev, hidden_size);
+    zero_double(x, vocab_size);
+    for (size_t i = 0; i < length; i++) {
+        x[seed] = 1;
+        // h1 = Wxh1 @ x + Wh1h1 @ ph1 + bh1
+        copy_double(h1, bh1, hidden_size);
+        mul_mat_col(hidden_size, vocab_size, Wxh1, x, h1);
+        mul_mat_col(hidden_size, hidden_size, Wh1h1, ph1, h1);
+        // h1 = tanh(h1)
+        tanh_vec(hidden_size, h1);
+        // h2 = Wh1h2 @ h1 + Wh2h2 @ ph2 + bh2
+        copy_double(h2, bh2, hidden_size);
+        mul_mat_col(hidden_size, hidden_size, Wh1h2, h1, h2);
+        mul_mat_col(hidden_size, hidden_size, Wh2h2, ph2, h2);
+        // h2 = tanh(h2)
+        tanh_vec(hidden_size, h2);
+        // y = Wh2y @ h2 + by
+        copy_double(y, by, vocab_size);
+        mul_mat_col(vocab_size, hidden_size, Wh2y, h2, y);
+        // p = exp(p) / sum(exp(p))
+        vec_to_exp_probs(vocab_size, y, p);
+
+        x[seed] = 0;
+
+        seed = choose_by_probs(p);
+
+        wwchar_t codepoint;
+        if (!map_get_codepoint(&vocabulary, seed, &codepoint)) fail("missing codepoint???");
+        to[i] = codepoint;
+
+        // ph1 = h1
+        copy_double(ph1, h1, hidden_size);
+        // ph2 = h2
+        copy_double(ph2, h2, hidden_size);
     }
 }
 
@@ -653,7 +997,7 @@ int main(int argc, const char **argv) {
     size_t sample_len_utf8;
 
     while (1) {
-        iteration();
+        iteration_func();
 
         FD_ZERO(&fdset);
         FD_SET(fileno(stdin), &fdset);
@@ -663,7 +1007,7 @@ int main(int argc, const char **argv) {
             case 's':
                 sample_ww = alloc_wwchar(sample_length + 1);
 
-                sample(sample_length, sample_ww, input_data[p]);
+                sample_func(sample_length, sample_ww, input_data[p]);
                 sample_ww[sample_length] = 0;
                 
                 sample_len_utf8 = wwutf8len(sample_ww);

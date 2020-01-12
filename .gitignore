@@ -10,7 +10,7 @@ rnn
 
 # data files
 config.py
-rnn-state.dat
-rnn-state.dat.old
+*.dat
+*.dat.old
 endstates/
 rnn.log
