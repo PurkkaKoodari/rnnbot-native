@@ -11,3 +11,6 @@ rnn
 # data files
 config.py
 rnn-state.dat
+rnn-state.dat.old
+endstates/
+rnn.log
