@@ -156,29 +156,32 @@ class RNNBot:
                     future.set_exception(ex)
             
         except asyncio.CancelledError:
-            if os.path.exists(datafile):
-                LOGGER.info("Backing up old data file")
-                try:
-                    shutil.copyfile(datafile, datafile + ".old")
-                except asyncio.CancelledError:
-                    raise
-                except:
-                    LOGGER.error("Failed to backup data file", exc_info=True)
-            LOGGER.info("Saving {} messages".format(len(self.messages)))
-            save_data = NEW_SAVE_MAGIC + struct.pack("=QQQQI", 1, self.last_commit_attempt, self.last_real_commit, self.messages_in_commit, len(self.messages))
-            for message in self.messages:
-                save_data += message.encode("utf-8") + b"\0"
-            if process is not None:
-                LOGGER.info("Saving RNN state")
-                process.stdin.write(b"q")
-                process.stdin.write_eof()
-                save_data += await process.stdout.read()
-                assert save_data.endswith(DUMP_SANITY), "data ended with {} instead of {}".format(save_data[-8:], DUMP_SANITY)
-                await process.wait()
-            async with aiofiles.open(datafile, "wb") as stream:
-                await stream.write(save_data)
-            LOGGER.info("Saved data")
             commit_task.cancel()
+            try:
+                if os.path.exists(datafile):
+                    LOGGER.info("Backing up old data file")
+                    shutil.copyfile(datafile, datafile + ".old")
+            except:
+                LOGGER.error("Failed to backup data file", exc_info=True)
+            try:
+                LOGGER.info("Saving {} messages".format(len(self.messages)))
+                save_data = NEW_SAVE_MAGIC + struct.pack("=QQQQI", 1, self.last_commit_attempt, self.last_real_commit, self.messages_in_commit, len(self.messages))
+                for message in self.messages:
+                    save_data += message.encode("utf-8") + b"\0"
+                if process is not None:
+                    LOGGER.info("Saving RNN state")
+                    process.stdin.write(b"q")
+                    process.stdin.write_eof()
+                    save_data += await process.stdout.read()
+                    assert save_data.endswith(DUMP_SANITY), "data ended with {} instead of {}".format(save_data[-8:], DUMP_SANITY)
+                    await process.wait()
+                async with aiofiles.open(datafile, "wb") as stream:
+                    await stream.write(save_data)
+                LOGGER.info("Saved data")
+            except asyncio.CancelledError:
+                raise
+            except:
+                LOGGER.error("Failed to save state", exc_info=True)
         
     async def do_action(self, action):
         future = asyncio.get_event_loop().create_future()
