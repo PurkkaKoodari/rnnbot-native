@@ -286,6 +286,7 @@ class RNNBot:
                 rnn_task.cancel()
                 bot_task.cancel()
             asyncio.get_event_loop().add_signal_handler(signal.SIGINT, quit)
+            asyncio.get_event_loop().add_signal_handler(signal.SIGTERM, quit)
 
             done, _ = await asyncio.wait([bot_task, rnn_task], return_when=asyncio.FIRST_EXCEPTION)
             quit()
