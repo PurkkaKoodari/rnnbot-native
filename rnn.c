@@ -544,12 +544,14 @@ static void init_from_stdin() {
         } else fail("unknown data version");
     }
 
-    if (vocab_size > 0x110000) fail("invalid vocabulary size; bad state file?");
-
     fprintf(stderr, "file version %lu\n", version);
     fprintf(stderr, "input size %lu\n", input_len);
     fprintf(stderr, "vocabulary size %lu\n", vocab_size);
     fprintf(stderr, "hidden layer size %lu\n", hidden_size);
+
+    if (vocab_size > 0x110000) fail("invalid vocabulary size; bad state file?");
+    if (hidden_size > 10000) fail("invalid hidden layer size; bad state file?");
+    if (input_len > 0x40000000) fail("invalid input size; bad state file?");
 
     if (version < 2) {
         init_from_stdin_v1();
@@ -575,7 +577,7 @@ static void dump_to_stdout() {
     write_size_t(&hidden_size, 1);
     write_size_t(&vocab_size, 1);
     write_size_t(&input_len, 1);
-    
+
     wwchar_t codepoint;
     for (symbol_t next_symbol = 0; next_symbol < vocab_size; next_symbol++) {
         map_get_codepoint(&vocabulary, next_symbol, &codepoint);

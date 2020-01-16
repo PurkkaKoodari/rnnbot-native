@@ -40,6 +40,7 @@ class RNNBot:
         self.messages = collections.deque(maxlen=config.COMMIT_MESSAGES)
         self.last_commit_attempt = 0
         self.last_real_commit = 0
+        self.messages_in_commit = 0
     
     def next_commit(self, after):
         return after + config.COMMIT_INTERVAL - (after - config.COMMIT_EPOCH) % config.COMMIT_INTERVAL
@@ -67,6 +68,10 @@ class RNNBot:
                     offset = 44
                 else:
                     raise ValueError("unknown save file version")
+
+            LOGGER.info("Last attempted commit: {}".format(time.strftime("%c", time.localtime(self.last_commit_attempt))))
+            LOGGER.info("Last successful commit: {}".format(time.strftime("%c", time.localtime(self.last_real_commit))))
+            LOGGER.info("Messages in commit: {}".format(self.messages_in_commit))
 
             LOGGER.info("Loading {} messages".format(num_messages))
             for _ in range(num_messages):
